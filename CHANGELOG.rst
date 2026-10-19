@@ -14,6 +14,7 @@ Changelog
 
 *Speculative Decoding*
 
+- DFlash-family drafts can use different counts of captured target layers and draft layers. Set ``dflash_architecture_config.target_layer_ids`` to select the captured layers.
 - Add the **external draft** speculative-decoding mode: train a pretrained standalone draft model against a cached base model, instead of grafting a draft head onto the target. Select it with ``mtsp.convert(draft, [("external", cfg)])`` or the ``speculative_external`` recipe; the draft keeps its own embeddings and lm_head and exports as an ordinary HF checkpoint.
 
 *Megatron Framework (M-LM / M-Bridge)*

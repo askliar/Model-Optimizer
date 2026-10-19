@@ -352,12 +352,6 @@ class HFDFlashModel(DFlashModel):
         num_draft_layers = self.dflash_config.num_hidden_layers
         user_target_layer_ids = config.dflash_architecture_config.get("target_layer_ids")
         if user_target_layer_ids:
-            if len(user_target_layer_ids) != num_draft_layers:
-                raise ValueError(
-                    f"dflash_architecture_config.target_layer_ids has "
-                    f"{len(user_target_layer_ids)} entries but the draft has "
-                    f"{num_draft_layers} layers; one target layer per draft layer is required."
-                )
             if max(user_target_layer_ids) >= num_target_layers:
                 raise ValueError(
                     f"dflash_architecture_config.target_layer_ids {user_target_layer_ids} "
@@ -366,7 +360,7 @@ class HFDFlashModel(DFlashModel):
             if len(set(user_target_layer_ids)) != len(user_target_layer_ids):
                 raise ValueError(
                     f"dflash_architecture_config.target_layer_ids {user_target_layer_ids} "
-                    "contains duplicates; each draft layer needs a distinct capture layer "
+                    "contains duplicates; capture layers must be distinct "
                     "(the streaming producer captures each base layer at most once)."
                 )
             # forward() indexes hidden_states[lid + 1], where a negative id silently wraps.

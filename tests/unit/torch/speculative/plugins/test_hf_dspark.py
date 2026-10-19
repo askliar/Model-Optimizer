@@ -718,11 +718,22 @@ class TestExplicitTargetLayerIds:
     would feed it features from layers it never saw (and mis-shape ``fc``).
     """
 
-    def _make_model(self, target_layer_ids=None, num_layers=NUM_DRAFT_LAYERS):
+    def _make_model(
+        self,
+        target_layer_ids=None,
+        num_layers=NUM_DRAFT_LAYERS,
+        offline=False,
+        init_checkpoint=None,
+    ):
         model = get_tiny_llama(num_hidden_layers=8)
         config = _get_dspark_config(num_layers=num_layers)
+        if offline:
+            model.config.num_orig_hidden_layers = model.config.num_hidden_layers
+            config["dflash_offline"] = True
         if target_layer_ids is not None:
             config["dflash_architecture_config"]["target_layer_ids"] = target_layer_ids
+        if init_checkpoint is not None:
+            config["dflash_init_checkpoint"] = str(init_checkpoint)
         mtsp.convert(model, [("dflash", config)])
         return model
 
@@ -737,9 +748,41 @@ class TestExplicitTargetLayerIds:
         assert len(model.target_layer_ids) == NUM_DRAFT_LAYERS
         assert model.target_layer_ids == build_target_layer_ids(8, NUM_DRAFT_LAYERS)
 
-    def test_wrong_count_raises(self):
-        with pytest.raises(ValueError, match="one target layer per draft layer"):
-            self._make_model(target_layer_ids=[0, 3, 7])
+    @pytest.mark.parametrize("target_layer_ids", [[0], [0, 3, 7]])
+    @pytest.mark.parametrize("offline", [False, True])
+    def test_capture_count_independent_of_draft_depth(self, target_layer_ids, offline):
+        """Training accepts fewer or more captured layers than draft layers."""
+        torch.manual_seed(0)
+        model = self._make_model(target_layer_ids=target_layer_ids, offline=offline)
+        input_ids = torch.randint(1, model.dflash_config.vocab_size, (1, SEQ_LEN))
+        capture_width = len(target_layer_ids) * model.dflash_config.hidden_size
+        assert model.dflash_module.fc.in_features == capture_width
+        assert len(model.dflash_module.layers) == NUM_DRAFT_LAYERS
+        kwargs = {}
+        if offline:
+            kwargs["base_model_outputs"] = {
+                "aux_hidden_states": torch.randn(
+                    1, SEQ_LEN, capture_width, dtype=model.dflash_module.fc.weight.dtype
+                ),
+                "base_model_hidden_states": torch.randn(
+                    1,
+                    SEQ_LEN,
+                    model.dflash_config.hidden_size,
+                    dtype=model.dflash_module.fc.weight.dtype,
+                ),
+            }
+        model.train()
+        output = model(
+            input_ids=input_ids,
+            attention_mask=torch.ones_like(input_ids),
+            labels=input_ids.clone(),
+            **kwargs,
+        )
+        assert torch.isfinite(output.loss)
+        output.loss.backward()
+        grad = model.dflash_module.fc.weight.grad
+        assert grad is not None and torch.isfinite(grad).all()
+        assert grad.abs().sum() > 0
 
     def test_out_of_range_raises(self):
         with pytest.raises(ValueError, match="beyond the base model"):
@@ -764,9 +807,16 @@ class TestExplicitTargetLayerIds:
         with pytest.raises(ValueError, match="non-negative"):
             self._make_model(target_layer_ids=[-2, 7])
 
-    def test_export_round_trips_explicit_ids(self, tmp_path):
-        model = self._make_model(target_layer_ids=[0, 7])
+    @pytest.mark.parametrize("target_layer_ids", [[0, 7], [0, 3, 7]])
+    def test_export_round_trips_explicit_ids(self, tmp_path, target_layer_ids):
+        model = self._make_model(target_layer_ids=target_layer_ids)
         model.get_exporter().export(tmp_path / "exp")
         with open(tmp_path / "exp" / "config.json") as f:
             cfg = json.load(f)
-        assert cfg["dflash_config"]["target_layer_ids"] == [0, 7]
+        assert cfg["dflash_config"]["target_layer_ids"] == target_layer_ids
+        assert cfg["num_hidden_layers"] == NUM_DRAFT_LAYERS
+        restored = self._make_model(
+            target_layer_ids=cfg["dflash_config"]["target_layer_ids"],
+            init_checkpoint=tmp_path / "exp",
+        )
+        torch.testing.assert_close(restored.dflash_module.fc.weight, model.dflash_module.fc.weight)
