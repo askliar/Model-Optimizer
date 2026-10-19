@@ -235,10 +235,11 @@ def build_quant_cfg(qformat: str, exclude: list[str], quantize_lm_head: bool) ->
     """Take the shipped preset and layer the drafter-specific exclusions on top."""
     quant_cfg = copy.deepcopy(QUANT_CFG_CHOICES[qformat])
     if quantize_lm_head:
-        # The preset disables *all* of lm_head's quantizers. Re-enabling only the weight
-        # one would leave a W+A format exporting lm_head with no input_scale while the
-        # config still advertises it as fully quantized, which a runtime fails to load.
-        for quantizer in ("weight_quantizer", "input_quantizer"):
+        # W+A formats need an input scale; weight-only formats must keep inputs unquantized.
+        quantizers = ["weight_quantizer"]
+        if qformat != "w4a16_nvfp4":
+            quantizers.append("input_quantizer")
+        for quantizer in quantizers:
             quant_cfg["quant_cfg"].append(
                 {"quantizer_name": f"*lm_head*{quantizer}", "enable": True}
             )
