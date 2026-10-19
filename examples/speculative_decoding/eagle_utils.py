@@ -234,6 +234,8 @@ class EagleTrainerWithAccLog(Trainer):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        # Draft losses are microbatch means, so Trainer must normalize accumulation.
+        self.model_accepts_loss_kwargs = False
         self.lora_lr_multiplier = lora_lr_multiplier
 
     def create_optimizer(self, model=None):
@@ -315,14 +317,15 @@ class EagleTrainerWithAccLog(Trainer):
                 self.optimizer.param_groups = new_groups
         return self.optimizer
 
-    def compute_loss(self, *args, **kwargs):
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """Override compute_loss to save train accs and per-component losses in trainer state."""
+        loss, outputs = super().compute_loss(model, inputs, return_outputs=True)
+        if not model.training:
+            return (loss, outputs) if return_outputs else loss
         if not hasattr(self.state, "training_accs"):
             self.state.training_accs = []
         if not hasattr(self.state, "component_losses"):
             self.state.component_losses = {"eagle": [], "preservation": []}
-        kwargs.pop("num_items_in_batch", None)
-        loss, outputs = super().compute_loss(return_outputs=True, *args, **kwargs)
         if hasattr(outputs, "train_acc") and any(outputs.train_acc):
             self.state.training_accs.append(outputs.train_acc)
         # Track per-component losses
@@ -333,7 +336,7 @@ class EagleTrainerWithAccLog(Trainer):
             val = getattr(outputs, attr, None)
             if val is not None:
                 self.state.component_losses[key].append(val.item())
-        return loss
+        return (loss, outputs) if return_outputs else loss
 
 
 class LoRAWarmupCallback(TrainerCallback):
